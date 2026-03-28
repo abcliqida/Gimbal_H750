@@ -43,17 +43,8 @@
 #define AS5600_REG_RAW_ANGLE_H        0x0C        /**< raw angle register high */
 #define PI                            3.1415926f
 #define Ts_100us                      0.0001f
-#define RS_PITCH                      3.76f
-#define RS_YAW                        2.823275f
 #define Ts_PWM                        Ts_100us
-#define NP                            7
 #define SQRT_3                        1.732051
-#define PSI_PITCH                     0.001761
-#define PSI_YAW                       0.003418
-//#define J                             5.9283516988062432E-5         //dv 基本为真实值 三个镜头情况
-#define J                             6.995e-06          //dv 单镜头情况
-#define Bw                            3.61e-4
-#define CONST_FRICTION                0.00085f            //dv 低速恒定摩擦力
 
 
 
@@ -145,7 +136,27 @@ typedef struct{
 AngleRawBuf_s PitchRawBuf = {0},YawRawBuf = {0};
 
 
-float AngleElecPitch = 0.0f;
+typedef struct{
+    float TeCmd;
+    float AngleElec;
+    float OmegaMechErr;
+    float OmegaMechIntg;
+    float OmegaMechCmd;
+    float OmegaMechFbk;
+    float KpOmega;
+    float KiOmega;
+    float Np;
+    float Rs;
+    float Psif;
+    Var2r_s Curr2r;
+    Var2r_s Volt2r;
+    Var2s_s Volt2s;
+    Var3s_s Volt3s;
+}SpdCtrlHandler_s;
+SpdCtrlHandler_s PitchSpdCtrl = {0},YawSpdCtrl = {0};
+
+
+
 float AngleMechPitch = 0.0f;
 
 
@@ -211,6 +222,9 @@ void NotchFliter(float* raw,float* notched,NotchBuf_s* NotchBuf,float OmegaNotch
 void MPU9250_SPI_WriteByte(uint8_t reg_addr, uint8_t data);
 uint8_t MPU9250_SPI_ReadByte(uint8_t reg_addr);
 uint8_t Mpu9250Init(void);
+void SpdCtrlInit(void);
+void SpdCtrl(SpdCtrlHandler_s* h,TIM_HandleTypeDef* htim);
+void SpdCtrlStart(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -284,9 +298,6 @@ int main(void)
   ASC(&htim1);
   ASC(&htim2);
 
-
-  HAL_GPIO_WritePin(GPIOA,GPIO_PIN_7,GPIO_PIN_SET);     //dv 使能驱动器1
-  HAL_GPIO_WritePin(GPIOC,GPIO_PIN_5,GPIO_PIN_SET);     //dv 使能驱动器2
   HAL_DAC_Start(&hdac1,DAC_CHANNEL_1);
   HAL_DAC_Start(&hdac1,DAC_CHANNEL_2);
 
@@ -295,17 +306,17 @@ int main(void)
 
   Mpu9250Init();
 
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);                                     // 跳转到SPI1读取角度
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);
   HAL_SPI_TransmitReceive_IT(&hspi1, (uint8_t*)&Spi1TxBuf, (uint8_t*)&Spi1RxBuf, 1);
 
+  SpdCtrlInit();
+  SpdCtrlStart();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      HAL_Delay(1);
-      uint8_t Spi4ErrCode = HAL_SPI_GetError(&hspi4);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -404,66 +415,21 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       if(i == 0)
       {
 //        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_SET);
-        static float KpOmegaPitch = 0.0069f;
-        static float KiOmegaPitch = 0.1597f;
-        static float OmegaMechErrPitch = 0.f;
-        static float OmegaMechIntgPitch = 0.f;
-        static float OmegaMechFbkPitch = 0.f;
-        static float OmegaMechCmdPitch = 0.f;
-        static float TeCmdPitch = 0.f;
-
 ///// 250dps 需要与GyroConfig同步修改
 //        OmegaXFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].X))/32768.f*4.3633f - 0.1157f;
 //        OmegaYFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].Y))/32768.f*4.3633f - 0.0069f;
 //        OmegaZFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].Z))/32768.f*4.3633f + 0.0035f;
 
-
-/// 1000dps 需要与GyroConfig同步修改
+        /// 1000dps 需要与GyroConfig同步修改
         OmegaXFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].X))/32768.f*17.4533f - 0.058f;
         OmegaYFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].Y))/32768.f*17.4533f - 0.003f;
         OmegaZFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].Z))/32768.f*17.4533f + 0.0017f;
         AngleMechPitch = (PitchRawBuf.buf[PitchRawBuf.latestidx]/16384.f)*2*PI;
 
-
-
-        OmegaMechFbkPitch = OmegaYFbk;
-        AngleElecPitch = ((PitchRawBuf.buf[PitchRawBuf.latestidx] - 1339 + 16384)%16384)%2340/2340.f*2*PI;
-
-        OmegaMechCmdPitch = -OmegaRefFromUart;
-
-
-
-
-
-//        OmegaMechCmdPitch = 0;
-
-        OmegaMechErrPitch = OmegaMechCmdPitch - OmegaMechFbkPitch;                   //dv
-        OmegaMechIntgPitch = OmegaMechIntgPitch + OmegaMechErrPitch*Ts_PWM;          //dv
-
-
-        TeCmdPitch = KpOmegaPitch*OmegaMechErrPitch + KiOmegaPitch*OmegaMechIntgPitch;
-
-
-
-        static Var2r_s Curr2r = {0};
-        static Var2r_s Volt2r = {0};
-        static Var2s_s Volt2s = {0};
-        static Var3s_s Volt3s = {0};
-
-
-        Curr2r.d = 0.0f;
-        Curr2r.q = TeCmdPitch/(1.5f*NP*PSI_PITCH);         //dv
-        Volt2r.d = RS_PITCH*Curr2r.d;
-        Volt2r.q = RS_PITCH*Curr2r.q;
-
-        /// SVPWM前对电压进行限幅
-        Volt2r.q = fmax(fmin(Volt2r.q,VdcFbk/SQRT_3),-VdcFbk/SQRT_3);
-
-        Trans_2rto2s(&Volt2r,&Volt2s,&AngleElecPitch);
-
-        SVPWM2(&htim1,&Volt2s,&Volt3s);
-//        ASC();
-
+        PitchSpdCtrl.AngleElec = ((PitchRawBuf.buf[PitchRawBuf.latestidx] - 1339 + 16384)%16384)%2340/2340.f*2*PI;
+        PitchSpdCtrl.OmegaMechCmd = -OmegaRefFromUart;
+        PitchSpdCtrl.OmegaMechFbk = OmegaYFbk;
+        SpdCtrl(&PitchSpdCtrl,&htim1);
 
 //        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_RESET);
       }
@@ -475,28 +441,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       if(i == 0)
       {
 //          HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_6);
-
-
-
-
-
-
-          static float AngleElecYaw = 0;
-          AngleElecYaw = (((YawRawBuf.buf[YawRawBuf.latestidx]-27+4096)%4096)%585)/585.f*2*PI;
-          static Var2r_s Volt2r = {0};
-          static Var2r_s Curr2r = {0};
-          static Var2s_s Volt2s = {0,0};
-          static Var3s_s Volt3s = {0,0,0};
-          static float TeCmdYaw = 0;
-          static float KpOmegaYaw = 0.01403f;
-          static float KiOmegaYaw = 0.2006f;
-
-          static float OmegaMechErrYaw = 0;
-          static float OmegaMechIntgYaw = 0;
-          static float OmegaMechCmdYaw = 0.f;
-          static float OmegaMechFbkYaw = 0.f;
-
-
+        YawSpdCtrl.AngleElec = (((YawRawBuf.buf[YawRawBuf.latestidx]-27+4096)%4096)%585)/585.f*2*PI;
         //        /// 扫频信号给定 start
 //        static float FreqInit = 2.0f;
 //        static float Sweept = 0.0f;
@@ -505,27 +450,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //        OmegaMechCmdYaw = PI*sinf(2*PI*         (      FreqInit* expf(0.2f*Sweept)   )     *Sweept);     //对数扫频
 //        /// 扫频信号 end
 
-//          OmegaMechCmdYaw = 0.f;
-          OmegaMechFbkYaw = -sinf(AngleMechPitch)*OmegaXFbk + cosf(AngleMechPitch)*OmegaZFbk;
-          OmegaMechErrYaw = OmegaMechCmdYaw - OmegaMechFbkYaw;
-          OmegaMechIntgYaw = OmegaMechIntgYaw + OmegaMechErrYaw*Ts_PWM;          //dv
-
-          TeCmdYaw = KpOmegaYaw*OmegaMechErrYaw + KiOmegaYaw*OmegaMechIntgYaw;
-
-
-          Curr2r.d = 0;
-          Curr2r.q = TeCmdYaw/(1.5f*NP*PSI_YAW);
-          Volt2r.d = RS_YAW*Curr2r.d;
-          Volt2r.q = RS_YAW*Curr2r.q;
-          Volt2r.q = fmax(fmin(Volt2r.q,VdcFbk/SQRT_3),-VdcFbk/SQRT_3);                 // 对电压限幅
-          Trans_2rto2s(&Volt2r,&Volt2s,&AngleElecYaw);
-          SVPWM2(&htim2,&Volt2s,&Volt3s);
-
-
-
+        YawSpdCtrl.OmegaMechCmd = 0.f;
+        YawSpdCtrl.OmegaMechFbk = -sinf(AngleMechPitch)*OmegaXFbk + cosf(AngleMechPitch)*OmegaZFbk;
+        SpdCtrl(&YawSpdCtrl,&htim2);
 
         static uint16_t DAC_1 = 0;
-        DAC_1 = (uint16_t)(((AngleElecYaw)/(2*PI)*4095.0f));
+        DAC_1 = (uint16_t)(((YawSpdCtrl.AngleElec)/(2*PI)*4095.0f));
         HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_1,DAC_ALIGN_12B_R,DAC_1);
 
         /// 串口发送数据 start
@@ -831,6 +761,48 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
     HAL_SPI_TransmitReceive_IT(&hspi4, Spi4TxBuf, Spi4RxBuf, 7);
   }
 }
+
+
+void SpdCtrlInit()
+{
+  PitchSpdCtrl.KpOmega = 0.0069f;
+  PitchSpdCtrl.KiOmega = 0.1597f;
+  PitchSpdCtrl.Np = 7;
+  PitchSpdCtrl.Rs = 3.76f;
+  PitchSpdCtrl.Psif = 0.001761f;
+
+  YawSpdCtrl.KpOmega = 0.01403f;
+  YawSpdCtrl.KiOmega = 0.2006f;
+  YawSpdCtrl.Np = 7;
+  YawSpdCtrl.Rs = 2.823275f;
+  YawSpdCtrl.Psif = 0.003418f;
+}
+
+
+
+void SpdCtrl(SpdCtrlHandler_s* h,TIM_HandleTypeDef* htim)
+{
+//        OmegaMechCmdPitch = 0;
+  h->OmegaMechErr = h->OmegaMechCmd - h->OmegaMechFbk;
+  h->OmegaMechIntg = h->OmegaMechIntg + h->OmegaMechErr*Ts_PWM;
+  h->TeCmd = h->KpOmega*h->OmegaMechErr + h->KiOmega*h->OmegaMechIntg;
+  h->Curr2r.d = 0.0f;
+  h->Curr2r.q = h->TeCmd/(1.5f*h->Np*h->Psif);
+  h->Volt2r.d = h->Rs*h->Curr2r.d;
+  h->Volt2r.q = h->Rs*h->Curr2r.q;
+  h->Volt2r.q = fmax(fmin(h->Volt2r.q,VdcFbk/SQRT_3),-VdcFbk/SQRT_3);                 /// SVPWM前对电压进行限幅
+  Trans_2rto2s(&(h->Volt2r),&(h->Volt2s),&h->AngleElec);
+  SVPWM2(htim,&(h->Volt2s),&(h->Volt3s));
+}
+
+
+void SpdCtrlStart(void)
+{
+  HAL_GPIO_WritePin(GPIOA,GPIO_PIN_7,GPIO_PIN_SET);     //dv 使能驱动器1
+  HAL_GPIO_WritePin(GPIOC,GPIO_PIN_5,GPIO_PIN_SET);     //dv 使能驱动器2
+}
+
+
 /* USER CODE END 4 */
 
  /* MPU Configuration */
