@@ -78,23 +78,18 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-uint8_t UartBuf[2] = {0,0};
-uint8_t Uart8Buf[4] = {0,0,0,0};
+uint8_t Uart5Buf[8] = {0};
 uint8_t UartTransBuf[4] = {0,0,0,0};
-uint16_t angle_mech = 0;
 float VdcFbk = 12.0f;
-float ThetaMechRef = 0.0f,ThetaMechsSloped,ThetaMechSlopeMin,ThetaMechSlopeMax,ThetaMechFbk,ThetaMechErr;
-float OmegaElecFbk = 0.0f;
-float OmegaMechSlopeMax = 0.0f,OmegaMechSlopeMin = 0.0f,IqMax = 0.0f,IqMin = 0.0f,OmegaMechSloped = 0.0f;
-float OmegaMechFbkFromEncFilted;
-float OmegaRefFromUart = 0;
+float IqMax = 0.0f,IqMin = 0.0f;
 float OmegaXFbk = 0;
 float OmegaYFbk = 0;
 float OmegaZFbk = 0;
-uint16_t ThetaMechFromUart = 0;
 
+uint32_t UartError = 0;
 
-uint16_t AngleRawPitch = 0;
+uint8_t I2c2TxBuf[4] = {0,0,0,0};
+uint8_t I2c2RxBuf[2] = {0,0};
 
 
 typedef struct{
@@ -137,6 +132,14 @@ AngleRawBuf_s PitchRawBuf = {0},YawRawBuf = {0};
 
 
 typedef struct{
+    float PitchOmegaBuf[4];
+    float YawOmegaBuf[4];
+    atomic_uint_fast16_t latestidx;
+    uint16_t write_idx;
+}UartRxBuf_s;
+UartRxBuf_s UartRxBuf = {0};
+
+typedef struct{
     float TeCmd;
     float AngleElec;
     float OmegaMechErr;
@@ -168,9 +171,6 @@ typedef struct{                                                             //dv
 typedef struct{
     float Sloped_prev;
 }SlopeBuf;
-SlopeBuf ThetaMechSlopeBuf = {0.0f},OmegaMechSlopeBuf = {0.0f};
-
-
 
 typedef struct{
     float x_prev;
@@ -178,7 +178,6 @@ typedef struct{
     float y_prev;
     float y_prev_prev
 }NotchBuf_s;
-NotchBuf_s OmegaMechImuNotchBuf = {0,0,0,0};
 
 
 ///
@@ -254,14 +253,9 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-  ThetaMechSlopeMax = 60.0f*2;
-  ThetaMechSlopeMin = -ThetaMechSlopeMax;
-  OmegaMechSlopeMax = 9698.6f;
-  OmegaMechSlopeMin = -OmegaMechSlopeMax;
   IqMin = -1.0f;
   IqMax = 1.0f;
 
-  ThetaMechFromUart = 2048;
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -279,11 +273,11 @@ int main(void)
   MX_TIM1_Init();
   MX_DAC1_Init();
   MX_I2C4_Init();
-  MX_UART4_Init();
-  MX_UART8_Init();
   MX_SPI4_Init();
   MX_SPI1_Init();
   MX_TIM2_Init();
+  MX_I2C2_Init();
+  MX_UART5_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim1);
   HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_1);
@@ -301,8 +295,7 @@ int main(void)
   HAL_DAC_Start(&hdac1,DAC_CHANNEL_1);
   HAL_DAC_Start(&hdac1,DAC_CHANNEL_2);
 
-  HAL_UART_Receive_IT(&huart4,UartBuf,2);
-  HAL_UART_Receive_IT(&huart8,Uart8Buf,4);
+  HAL_UART_Receive_IT(&huart5,Uart5Buf,8);
 
   Mpu9250Init();
 
@@ -311,6 +304,9 @@ int main(void)
 
   SpdCtrlInit();
   SpdCtrlStart();
+
+  HAL_I2C_EnableListen_IT(&hi2c2);
+  HAL_I2C_Slave_Seq_Receive_IT(&hi2c2, I2c2RxBuf, 2, I2C_LAST_FRAME);  //开启从机中断接收
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -414,7 +410,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       i = (i+1)%2;
       if(i == 0)
       {
-//        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_SET);
+
 ///// 250dps 需要与GyroConfig同步修改
 //        OmegaXFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].X))/32768.f*4.3633f - 0.1157f;
 //        OmegaYFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].Y))/32768.f*4.3633f - 0.0069f;
@@ -427,12 +424,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         AngleMechPitch = (PitchRawBuf.buf[PitchRawBuf.latestidx]/16384.f)*2*PI;
 
         PitchSpdCtrl.AngleElec = ((PitchRawBuf.buf[PitchRawBuf.latestidx] - 1339 + 16384)%16384)%2340/2340.f*2*PI;
-        PitchSpdCtrl.OmegaMechCmd = -OmegaRefFromUart;
+        PitchSpdCtrl.OmegaMechCmd = UartRxBuf.PitchOmegaBuf[UartRxBuf.latestidx];
         PitchSpdCtrl.OmegaMechFbk = OmegaYFbk;
         SpdCtrl(&PitchSpdCtrl,&htim1);
-
-//        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_RESET);
       }
+
   }
   if(htim->Instance == TIM2)
   {
@@ -440,7 +437,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       i = (i+1)%2;
       if(i == 0)
       {
-//          HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_6);
+        HAL_GPIO_WritePin(GPIOD,GPIO_PIN_8,GPIO_PIN_SET);
         YawSpdCtrl.AngleElec = (((YawRawBuf.buf[YawRawBuf.latestidx]-27+4096)%4096)%585)/585.f*2*PI;
         //        /// 扫频信号给定 start
 //        static float FreqInit = 2.0f;
@@ -450,13 +447,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //        OmegaMechCmdYaw = PI*sinf(2*PI*         (      FreqInit* expf(0.2f*Sweept)   )     *Sweept);     //对数扫频
 //        /// 扫频信号 end
 
-        YawSpdCtrl.OmegaMechCmd = 0.f;
+        YawSpdCtrl.OmegaMechCmd = UartRxBuf.YawOmegaBuf[UartRxBuf.latestidx];
         YawSpdCtrl.OmegaMechFbk = -sinf(AngleMechPitch)*OmegaXFbk + cosf(AngleMechPitch)*OmegaZFbk;
         SpdCtrl(&YawSpdCtrl,&htim2);
 
-        static uint16_t DAC_1 = 0;
-        DAC_1 = (uint16_t)(((YawSpdCtrl.AngleElec)/(2*PI)*4095.0f));
-        HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_1,DAC_ALIGN_12B_R,DAC_1);
+
+
 
         /// 串口发送数据 start
 //        static uint8_t BufToRecord = 1;
@@ -487,6 +483,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //        }
 //        OmegaRecordCntr = (OmegaRecordCntr+1)%100;
 /// 串口发送数据End
+        HAL_GPIO_WritePin(GPIOD,GPIO_PIN_8,GPIO_PIN_RESET);
 
       }
   }
@@ -522,16 +519,15 @@ void NotchFliter(float* raw,float* notched,NotchBuf_s* NotchBuf,float OmegaNotch
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-    if(huart->Instance == UART4)
+    if(huart->Instance == UART5)
     {
-      ThetaMechFromUart = UartBuf[0]<<8 | UartBuf[1];
-//      HAL_GPIO_TogglePin(GPIOA,GPIO_PIN_6);
-      HAL_UART_Receive_IT(&huart4,UartBuf,2);
-    }
-    if(huart->Instance == UART8)
-    {
-      memcpy(&OmegaRefFromUart, Uart8Buf, 4);
-      HAL_UART_Receive_IT(&huart8,Uart8Buf,4);
+      HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_10);
+      memcpy(&(UartRxBuf.PitchOmegaBuf[UartRxBuf.write_idx]), Uart5Buf, 4);
+      memcpy(&(UartRxBuf.YawOmegaBuf[UartRxBuf.write_idx]), &(Uart5Buf[4]), 4);
+      atomic_store(&(UartRxBuf.latestidx),UartRxBuf.write_idx);
+      UartRxBuf.write_idx = (UartRxBuf.write_idx+1)%4;
+      UartError = HAL_UART_GetError(&huart5);
+      HAL_UART_Receive_IT(&huart5,Uart5Buf,8);
     }
 }
 
@@ -803,6 +799,75 @@ void SpdCtrlStart(void)
 }
 
 
+
+
+
+
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode)
+{
+    if(hi2c->Instance == I2C2)
+    {
+        __HAL_I2C_CLEAR_FLAG(hi2c, I2C_FLAG_ADDR);
+
+        if(TransferDirection == I2C_DIRECTION_RECEIVE)      //需要发送
+        {
+            // 数据处理
+            uint16_t temp = (PitchRawBuf.buf[PitchRawBuf.latestidx])%16384;
+            I2c2TxBuf[0] = (temp >> 8) & 0xFF;
+            I2c2TxBuf[1] = temp & 0xFF;
+            temp = YawRawBuf.buf[YawRawBuf.latestidx];
+            I2c2TxBuf[2] = (temp >> 8) & 0xFF;
+            I2c2TxBuf[3] = temp & 0xFF;
+            //
+            HAL_I2C_Slave_Seq_Transmit_IT(&hi2c2, I2c2TxBuf, 4, I2C_FIRST_FRAME);
+//		HAL_I2C_Slave_Transmit_IT(&hi2c1, (tx_buff + rx_buff[0]), 1);   //该函数发送会使总线死掉
+        }
+        else if(TransferDirection == I2C_DIRECTION_TRANSMIT)//需要接收
+        {
+            //数据处理
+            //
+            //
+            HAL_I2C_Slave_Seq_Receive_IT(&hi2c2, I2c2RxBuf, 2, I2C_FIRST_AND_NEXT_FRAME);
+//		HAL_I2C_Slave_Receive_IT(&hi2c1, rx_buff, 1);                   //该函数接受会使总线死掉
+        }
+        else
+        {}
+    }
+}
+
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)  //监听中断回调
+{
+    if(hi2c->Instance == I2C2)
+    {
+        HAL_I2C_EnableListen_IT(hi2c); // Restart
+    }
+}
+
+void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)  //全部发送完成回调
+{
+    if(hi2c->Instance == I2C2)
+    {
+        // 数据处理
+        //
+        //
+        HAL_I2C_Slave_Seq_Transmit_IT(&hi2c2, I2c2TxBuf, 2, I2C_FIRST_FRAME);
+    }
+}
+
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)  //全部接收完成回调
+{
+    if(hi2c->Instance == I2C2)
+    {
+        // 数据处理
+        if(TorqForGravityCompensate.IsValid == 0)
+        {
+            TorqForGravityCompensate.Torq = ((float)((int16_t)(I2c2RxBuf[0] << 8 | I2c2RxBuf[1])))/800000.0f;
+            TorqForGravityCompensate.IsValid = 1;
+        }
+        HAL_I2C_Slave_Seq_Receive_IT(&hi2c2, I2c2RxBuf, 2, I2C_FIRST_AND_NEXT_FRAME);
+    }
+}
+
 /* USER CODE END 4 */
 
  /* MPU Configuration */
@@ -842,12 +907,12 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-      ASC(&htim1);
-      ASC(&htim2);
-  }
+//  __disable_irq();
+//  while (1)
+//  {
+//      ASC(&htim1);
+//      ASC(&htim2);
+//  }
 
   /* USER CODE END Error_Handler_Debug */
 }
