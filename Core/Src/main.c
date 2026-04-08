@@ -39,7 +39,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define AS5600_ADDRESS            0x36        /**< iic device address */
+#define AS5600_ADDRESS                0x36        /**< iic device address */
 #define AS5600_REG_RAW_ANGLE_H        0x0C        /**< raw angle register high */
 #define PI                            3.1415926f
 #define Ts_100us                      0.0001f
@@ -425,9 +425,24 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
         PitchSpdCtrl.AngleElec = ((PitchRawBuf.buf[PitchRawBuf.latestidx] - 1339 + 16384)%16384)%2340/2340.f*2*PI;
         PitchSpdCtrl.OmegaMechCmd = UartRxBuf.PitchOmegaBuf[UartRxBuf.latestidx];
+        PitchSpdCtrl.OmegaMechCmd = fmax(fmin(PitchSpdCtrl.OmegaMechCmd,PI),-PI);
         PitchSpdCtrl.OmegaMechFbk = OmegaYFbk;
         SpdCtrl(&PitchSpdCtrl,&htim1);
+
+
+        static uint16_t DAC_1 = 0;
+        static uint16_t DAC_2 = 0;
+        DAC_1 = (uint16_t)(((PitchSpdCtrl.OmegaMechCmd + 0.5*PI)/(PI)*4095.0f));
+        DAC_2 = (uint16_t)(((PitchSpdCtrl.OmegaMechFbk + 0.5*PI)/(PI)*4095.0f));
+        HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_1,DAC_ALIGN_12B_R,DAC_1);
+        HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_2,DAC_ALIGN_12B_R,DAC_2);
+
+
         HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_RESET);
+
+
+
+
       }
 
   }
@@ -448,6 +463,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //        /// 扫频信号 end
 
         YawSpdCtrl.OmegaMechCmd = UartRxBuf.YawOmegaBuf[UartRxBuf.latestidx];
+        YawSpdCtrl.OmegaMechCmd = fmax(fmin(YawSpdCtrl.OmegaMechCmd,PI),-PI);
         YawSpdCtrl.OmegaMechFbk = -sinf(AngleMechPitch)*OmegaXFbk + cosf(AngleMechPitch)*OmegaZFbk;
         SpdCtrl(&YawSpdCtrl,&htim2);
 
@@ -761,8 +777,8 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 
 void SpdCtrlInit()
 {
-  PitchSpdCtrl.KpOmega = 0.0069f;
-  PitchSpdCtrl.KiOmega = 0.1597f;
+  PitchSpdCtrl.KpOmega = 0.00521f;
+  PitchSpdCtrl.KiOmega = 0.08972f;
   PitchSpdCtrl.Np = 7;
   PitchSpdCtrl.Rs = 3.76f;
   PitchSpdCtrl.Psif = 0.001761f;
