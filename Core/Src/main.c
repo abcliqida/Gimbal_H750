@@ -140,6 +140,28 @@ typedef struct{
 UartRxBuf_s UartRxBuf = {0};
 
 typedef struct{
+    float In;
+    float In_1delay;
+    float In_2delay;
+    float In_3delay;
+    float Out;
+    float Out_1delay;
+    float Out_2delay;
+    float Out_3delay;
+}Compensator_s;
+
+
+typedef struct{
+    float a0;
+    float a1;
+    float a2;
+    float a3;
+    float b1;
+    float b2;
+    float b3;
+}CompCoeff_s;
+
+typedef struct{
     float TeCmd;
     float AngleElec;
     float OmegaMechErr;
@@ -155,6 +177,8 @@ typedef struct{
     Var2r_s Volt2r;
     Var2s_s Volt2s;
     Var3s_s Volt3s;
+    Compensator_s Comp;
+    CompCoeff_s CompCoeff;
 }SpdCtrlHandler_s;
 SpdCtrlHandler_s PitchSpdCtrl = {0},YawSpdCtrl = {0};
 
@@ -410,7 +434,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       i = (i+1)%2;
       if(i == 0)
       {
-        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_SET);
+//        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_SET);
 
 ///// 250dps 需要与GyroConfig同步修改
 //        OmegaXFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].X))/32768.f*4.3633f - 0.1157f;
@@ -424,24 +448,53 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         AngleMechPitch = (PitchRawBuf.buf[PitchRawBuf.latestidx]/16384.f)*2*PI;
 
         PitchSpdCtrl.AngleElec = ((PitchRawBuf.buf[PitchRawBuf.latestidx] - 1339 + 16384)%16384)%2340/2340.f*2*PI;
-        PitchSpdCtrl.OmegaMechCmd = UartRxBuf.PitchOmegaBuf[UartRxBuf.latestidx];
+//        PitchSpdCtrl.Comp.In = UartRxBuf.PitchOmegaBuf[UartRxBuf.latestidx];
+
+        static LPFBuf PitchOmegaLpfBuf = {0};
+        static float PitchOmegaFilted = 0;
+        LPF(&OmegaYFbk,&PitchOmegaFilted,&PitchOmegaLpfBuf,2*PI*100,Ts_PWM);
+
+
+
+
+        // ForTest start
+//        static uint32_t k = 0;
+//        static float t =0.f;
+//        k = (k+1)%500;
+//        if(k == 0)
+//        {
+//            t = t + 0.05;
+////            PitchSpdCtrl.OmegaMechCmd = 0.05f*sinf(2*PI*0.1f*t);
+//            PitchSpdCtrl.OmegaMechCmd = 0.1f*sinf(2*PI*4.0f*t);
+////            PitchSpdCtrl.OmegaMechCmd = 0.001*t;
+//        }
+        // ForTest end
+
+
+
+        // ForTest start
+//        static uint32_t k = 0;
+//        float OmegaCmd = PI*0.001;
+//        static uint8_t Sign = 1;
+//        k = (k+1)%1000;
+//        if(k == 0)
+//        {
+//          Sign = Sign*-1;
+//        }
+//        PitchSpdCtrl.OmegaMechCmd = OmegaCmd*Sign;
+        // ForTest end
+
+
+//        PitchSpdCtrl.OmegaMechCmd = 0.f;
         PitchSpdCtrl.OmegaMechCmd = fmax(fmin(PitchSpdCtrl.OmegaMechCmd,PI),-PI);
-        PitchSpdCtrl.OmegaMechFbk = OmegaYFbk;
+        PitchSpdCtrl.OmegaMechFbk = PitchOmegaFilted;
+
         SpdCtrl(&PitchSpdCtrl,&htim1);
 
 
-        static uint16_t DAC_1 = 0;
-        static uint16_t DAC_2 = 0;
-        DAC_1 = (uint16_t)(((PitchSpdCtrl.OmegaMechCmd + 0.5*PI)/(PI)*4095.0f));
-        DAC_2 = (uint16_t)(((PitchSpdCtrl.OmegaMechFbk + 0.5*PI)/(PI)*4095.0f));
-        HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_1,DAC_ALIGN_12B_R,DAC_1);
-        HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_2,DAC_ALIGN_12B_R,DAC_2);
 
 
-        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_RESET);
-
-
-
+//        HAL_GPIO_WritePin(GPIOA,GPIO_PIN_6,GPIO_PIN_RESET);
 
       }
 
@@ -452,7 +505,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       i = (i+1)%2;
       if(i == 0)
       {
-        HAL_GPIO_WritePin(GPIOD,GPIO_PIN_8,GPIO_PIN_SET);
+//        HAL_GPIO_WritePin(GPIOD,GPIO_PIN_8,GPIO_PIN_SET);
         YawSpdCtrl.AngleElec = (((YawRawBuf.buf[YawRawBuf.latestidx]-27+4096)%4096)%585)/585.f*2*PI;
         //        /// 扫频信号给定 start
 //        static float FreqInit = 2.0f;
@@ -462,9 +515,40 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //        OmegaMechCmdYaw = PI*sinf(2*PI*         (      FreqInit* expf(0.2f*Sweept)   )     *Sweept);     //对数扫频
 //        /// 扫频信号 end
 
-        YawSpdCtrl.OmegaMechCmd = UartRxBuf.YawOmegaBuf[UartRxBuf.latestidx];
+
+
+          // ForTest start
+          static uint32_t k = 0;
+          static float t =0.f;
+          k = (k+1)%500;
+          if(k == 0)
+          {
+              t = t + 0.05;
+              YawSpdCtrl.OmegaMechCmd = 0.05f*sinf(2*PI*2.0f*t);
+//            YawSpdCtrl.OmegaMechCmd = 0.001*t;
+          }
+          // ForTest end
+
+
+
+
+//        YawSpdCtrl.OmegaMechCmd = UartRxBuf.YawOmegaBuf[UartRxBuf.latestidx];
+//        YawSpdCtrl.OmegaMechCmd = 0.f;
         YawSpdCtrl.OmegaMechCmd = fmax(fmin(YawSpdCtrl.OmegaMechCmd,PI),-PI);
-        YawSpdCtrl.OmegaMechFbk = -sinf(AngleMechPitch)*OmegaXFbk + cosf(AngleMechPitch)*OmegaZFbk;
+
+        static float YawOmegaRaw = 0.f;
+        static LPFBuf YawOmegaLpfBuf = {0};
+        static float YawOmegaFilted = 0.f;
+
+
+        YawOmegaRaw = -sinf(AngleMechPitch)*OmegaXFbk + cosf(AngleMechPitch)*OmegaZFbk;
+        LPF(&YawOmegaRaw,&YawOmegaFilted,&YawOmegaLpfBuf,2*PI*100,Ts_PWM);
+
+        YawSpdCtrl.OmegaMechFbk = YawOmegaFilted;
+
+
+
+
         SpdCtrl(&YawSpdCtrl,&htim2);
 
 
@@ -499,7 +583,19 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //        }
 //        OmegaRecordCntr = (OmegaRecordCntr+1)%100;
 /// 串口发送数据End
-        HAL_GPIO_WritePin(GPIOD,GPIO_PIN_8,GPIO_PIN_RESET);
+
+
+
+        static uint16_t DAC_1 = 0;
+        static uint16_t DAC_2 = 0;
+        DAC_1 = (uint16_t)(((YawSpdCtrl.OmegaMechCmd + 0.5*PI)/(1.0f*PI)*4095.0f));
+        DAC_2 = (uint16_t)(((YawSpdCtrl.OmegaMechFbk + 0.5*PI)/(1.0f*PI)*4095.0f));
+        HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_1,DAC_ALIGN_12B_R,DAC_1);
+        HAL_DAC_SetValue(&hdac1,DAC_CHANNEL_2,DAC_ALIGN_12B_R,DAC_2);
+
+
+
+//        HAL_GPIO_WritePin(GPIOD,GPIO_PIN_8,GPIO_PIN_RESET);
 
       }
   }
@@ -537,7 +633,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if(huart->Instance == UART5)
     {
-      HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_10);
+//      HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_10);
       memcpy(&(UartRxBuf.PitchOmegaBuf[UartRxBuf.write_idx]), Uart5Buf, 4);
       memcpy(&(UartRxBuf.YawOmegaBuf[UartRxBuf.write_idx]), &(Uart5Buf[4]), 4);
       atomic_store(&(UartRxBuf.latestidx),UartRxBuf.write_idx);
@@ -706,10 +802,10 @@ uint8_t MPU9250_SPI_ReadByte(uint8_t reg_addr)                                  
 
 uint8_t Mpu9250Init(void)
 {
-  uint8_t who_am_i = 0;                                                                                   //dv
-  MPU9250_SPI_WriteByte(MPU9250_PWR_MGMT_1, 0x80);                                          //dv 重置
-  HAL_Delay(100);                                                                                   //dv 延迟100ms
-  MPU9250_SPI_WriteByte(MPU9250_PWR_MGMT_1, 0x01);                                           //dv 自动选择最佳时钟源
+  uint8_t who_am_i = 0;                                                                                     //dv
+  MPU9250_SPI_WriteByte(MPU9250_PWR_MGMT_1, 0x80);                                            //dv 重置
+  HAL_Delay(100);                                                                                     //dv 延迟100ms
+  MPU9250_SPI_WriteByte(MPU9250_PWR_MGMT_1, 0x01);                                            //dv 自动选择最佳时钟源
   HAL_Delay(10);                                                                                      //dv 延迟10ms
   MPU9250_SPI_WriteByte(MPU9250_USER_CTRL, 0x10);                                             //dv 禁用IIC，启用SPI
   MPU9250_SPI_WriteByte(MPU9250_SMPLRT_DIV, 0x00);                                            //dv
@@ -719,10 +815,10 @@ uint8_t Mpu9250Init(void)
   MPU9250_SPI_WriteByte(MPU9250_ACCEL_CONFIG2, 0x08);                                         //dv
   MPU9250_SPI_WriteByte(MPU9250_INT_ENABLE, 0x00);                                            //dv 禁用中断
   MPU9250_SPI_WriteByte(MPU9250_INT_PIN_CFG, 0x10);
-  who_am_i = MPU9250_SPI_ReadByte(MPU9250_WHO_AM_I);                                               //dv
+  who_am_i = MPU9250_SPI_ReadByte(MPU9250_WHO_AM_I);                                                //dv
   if (who_am_i == 0x71 || who_am_i == 0x73) {                                                               //dv
-    return 0;                                                                                              //dv
-  } else {                                                                                                    //dv
+    return 0;                                                                                               //dv
+  } else {                                                                                                  //dv
     return 1;                                                                                               //dv
   }
 }
@@ -777,17 +873,32 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 
 void SpdCtrlInit()
 {
-  PitchSpdCtrl.KpOmega = 0.00521f;
-  PitchSpdCtrl.KiOmega = 0.08972f;
+  PitchSpdCtrl.KpOmega = 0.001025f;
+  PitchSpdCtrl.KiOmega = PitchSpdCtrl.KpOmega*19.31f;
   PitchSpdCtrl.Np = 7;
   PitchSpdCtrl.Rs = 3.76f;
   PitchSpdCtrl.Psif = 0.001761f;
+  PitchSpdCtrl.CompCoeff.a0 = 79.91f;
+  PitchSpdCtrl.CompCoeff.a1 = -206.2f;
+  PitchSpdCtrl.CompCoeff.a2 = 177.5f;
+  PitchSpdCtrl.CompCoeff.a3 = -51.06f;
+  PitchSpdCtrl.CompCoeff.b1 = -2.412f;
+  PitchSpdCtrl.CompCoeff.b2 = 1.947f;
+  PitchSpdCtrl.CompCoeff.b3 = -0.5209f;
 
-  YawSpdCtrl.KpOmega = 0.01403f;
-  YawSpdCtrl.KiOmega = 0.2006f;
+
+  YawSpdCtrl.KpOmega = 0.0026909f;
+  YawSpdCtrl.KiOmega = YawSpdCtrl.KpOmega*8.475f;
   YawSpdCtrl.Np = 7;
   YawSpdCtrl.Rs = 2.823275f;
   YawSpdCtrl.Psif = 0.003418f;
+  YawSpdCtrl.CompCoeff.a0 = 125.2f;
+  YawSpdCtrl.CompCoeff.a1 = -197.f;
+  YawSpdCtrl.CompCoeff.a2 = 58.1f;
+  YawSpdCtrl.CompCoeff.a3 = 15.32f;
+  YawSpdCtrl.CompCoeff.b1 = -1.288f;
+  YawSpdCtrl.CompCoeff.b2 = 0.3707f;
+  YawSpdCtrl.CompCoeff.b3 = -0.01782f;
 }
 
 
@@ -795,9 +906,19 @@ void SpdCtrlInit()
 void SpdCtrl(SpdCtrlHandler_s* h,TIM_HandleTypeDef* htim)
 {
 //        OmegaMechCmdPitch = 0;
-  h->OmegaMechErr = h->OmegaMechCmd - h->OmegaMechFbk;
-  h->OmegaMechIntg = h->OmegaMechIntg + h->OmegaMechErr*Ts_PWM;
-  h->TeCmd = h->KpOmega*h->OmegaMechErr + h->KiOmega*h->OmegaMechIntg;
+  h->Comp.In = h->OmegaMechCmd - h->OmegaMechFbk;
+  h->Comp.Out = h->CompCoeff.a0*h->Comp.In \
+                                + h->CompCoeff.a1*h->Comp.In_1delay \
+                                + h->CompCoeff.a2*h->Comp.In_2delay \
+                                + h->CompCoeff.a3*h->Comp.In_3delay \
+                                - h->CompCoeff.b1*h->Comp.Out_1delay \
+                                - h->CompCoeff.b2*h->Comp.Out_2delay \
+                                - h->CompCoeff.b3*h->Comp.Out_3delay;
+
+  h->OmegaMechIntg = h->Comp.Out*Ts_PWM + h->OmegaMechIntg;
+  h->TeCmd = h->KpOmega*h->Comp.Out + h->KiOmega*h->OmegaMechIntg;
+
+
   h->Curr2r.d = 0.0f;
   h->Curr2r.q = h->TeCmd/(1.5f*h->Np*h->Psif);
   h->Volt2r.d = h->Rs*h->Curr2r.d;
@@ -805,13 +926,21 @@ void SpdCtrl(SpdCtrlHandler_s* h,TIM_HandleTypeDef* htim)
   h->Volt2r.q = fmax(fmin(h->Volt2r.q,VdcFbk/SQRT_3),-VdcFbk/SQRT_3);                 /// SVPWM前对电压进行限幅
   Trans_2rto2s(&(h->Volt2r),&(h->Volt2s),&h->AngleElec);
   SVPWM2(htim,&(h->Volt2s),&(h->Volt3s));
+
+
+  h->Comp.In_3delay = h->Comp.In_2delay;
+  h->Comp.In_2delay = h->Comp.In_1delay;
+  h->Comp.In_1delay = h->Comp.In;
+  h->Comp.Out_3delay = h->Comp.Out_2delay;
+  h->Comp.Out_2delay = h->Comp.Out_1delay;
+  h->Comp.Out_1delay = h->Comp.Out;
 }
 
 
 void SpdCtrlStart(void)
 {
-  HAL_GPIO_WritePin(GPIOA,GPIO_PIN_7,GPIO_PIN_SET);     //dv 使能驱动器1
-  HAL_GPIO_WritePin(GPIOC,GPIO_PIN_5,GPIO_PIN_SET);     //dv 使能驱动器2
+//  HAL_GPIO_WritePin(GPIOA,GPIO_PIN_7,GPIO_PIN_SET);     //dv 使能驱动器1
+//  HAL_GPIO_WritePin(GPIOC,GPIO_PIN_5,GPIO_PIN_SET);     //dv 使能驱动器2
 }
 
 
