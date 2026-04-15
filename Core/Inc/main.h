@@ -57,6 +57,16 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define SPI4_CS_Pin GPIO_PIN_3
+#define SPI4_CS_GPIO_Port GPIOE
+#define GPIOForMonitor1_Pin GPIO_PIN_6
+#define GPIOForMonitor1_GPIO_Port GPIOA
+#define PitchChanelEnb_Pin GPIO_PIN_7
+#define PitchChanelEnb_GPIO_Port GPIOA
+#define SPI1_CS_Pin GPIO_PIN_4
+#define SPI1_CS_GPIO_Port GPIOC
+#define YawChanelEnb_Pin GPIO_PIN_5
+#define YawChanelEnb_GPIO_Port GPIOC
 
 /* USER CODE BEGIN Private defines */
 

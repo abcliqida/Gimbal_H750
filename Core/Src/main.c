@@ -224,7 +224,23 @@ uint8_t Spi4RxBuf[7] = {0};
 uint8_t I2c4RxBuf[2] = {0};
 
 
+typedef struct
+{
+    float PitchAngleElec[50];
+    float PitchOmegaCmd[50];
+    float PitchOmegaFbk[50];
+    float YawAngleElec[50];
+    float YawOmegaCmd[50];
+    float YawOmegaFbk[50];
+}gimbal_data_s;
 
+typedef struct
+{
+    uint16_t header;
+    uint16_t length;
+    gimbal_data_s data;
+}Uart7TxFrame_s;
+Uart7TxFrame_s Uart5TxFrame[2] = {0};
 
 /* USER CODE END PV */
 
@@ -323,7 +339,7 @@ int main(void)
 
   Mpu9250Init();
 
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
   HAL_SPI_TransmitReceive_IT(&hspi1, (uint8_t*)&Spi1TxBuf, (uint8_t*)&Spi1RxBuf, 1);
 
   SpdCtrlInit();
@@ -445,9 +461,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         OmegaXFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].X))/32768.f*17.4533f - 0.058f;
         OmegaYFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].Y))/32768.f*17.4533f - 0.003f;
         OmegaZFbk = ((float)(OmegaRawBuf.buf[OmegaRawBuf.latestidx].Z))/32768.f*17.4533f + 0.0017f;
-        AngleMechPitch = (PitchRawBuf.buf[PitchRawBuf.latestidx]/16384.f)*2*PI;
+        AngleMechPitch = ((PitchRawBuf.buf[PitchRawBuf.latestidx]-14488+16384)%16384/16384.f)*2*PI;
 
-        PitchSpdCtrl.AngleElec = ((PitchRawBuf.buf[PitchRawBuf.latestidx] - 1339 + 16384)%16384)%2340/2340.f*2*PI;
+        PitchSpdCtrl.AngleElec = ((PitchRawBuf.buf[PitchRawBuf.latestidx] - 14921 + 16384)%16384)%2340/2340.f*2*PI;
 //        PitchSpdCtrl.Comp.In = UartRxBuf.PitchOmegaBuf[UartRxBuf.latestidx];
 
         static LPFBuf PitchOmegaLpfBuf = {0};
@@ -506,13 +522,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       if(i == 0)
       {
 //        HAL_GPIO_WritePin(GPIOD,GPIO_PIN_8,GPIO_PIN_SET);
-        YawSpdCtrl.AngleElec = (((YawRawBuf.buf[YawRawBuf.latestidx]-27+4096)%4096)%585)/585.f*2*PI;
+        YawSpdCtrl.AngleElec = (((YawRawBuf.buf[YawRawBuf.latestidx]-2487+4096)%4096)%585)/585.f*2*PI;
         //        /// 扫频信号给定 start
 //        static float FreqInit = 2.0f;
 //        static float Sweept = 0.0f;
 //        Sweept = Sweept + 0.0001f;
 ////        TeRef = 0.035f*sinf(2*PI*(FreqInit*Sweept+2.0f*Sweept*Sweept));     //线性扫频
-//        OmegaMechCmdYaw = PI*sinf(2*PI*         (      FreqInit* expf(0.2f*Sweept)   )     *Sweept);     //对数扫频
+//        YawSpdCtrl.OmegaMechCmd = 0.5*PI*sinf(2*PI*         (      FreqInit* expf(0.2f*Sweept)   )     *Sweept);     //对数扫频
 //        /// 扫频信号 end
 
 
@@ -633,7 +649,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if(huart->Instance == UART5)
     {
-//      HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_10);
+//      HAL_GPIO_TogglePin(GPIOForMonitor1_GPIO_Port,GPIOForMonitor1_Pin);
       memcpy(&(UartRxBuf.PitchOmegaBuf[UartRxBuf.write_idx]), Uart5Buf, 4);
       memcpy(&(UartRxBuf.YawOmegaBuf[UartRxBuf.write_idx]), &(Uart5Buf[4]), 4);
       atomic_store(&(UartRxBuf.latestidx),UartRxBuf.write_idx);
@@ -780,9 +796,9 @@ void LPF(float* raw,float* filted,LPFBuf* s,float wc,float Ts)                  
 void MPU9250_SPI_WriteByte(uint8_t reg_addr, uint8_t data)                                      //dv
 {
   uint8_t tx_data[2] = {reg_addr & ~MPU9250_SPI_READ, data};                          //dv
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_RESET);                //dv
+  HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_RESET);                //dv
   HAL_SPI_Transmit(&hspi4, tx_data, 2, HAL_MAX_DELAY);                //dv
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_SET);                  //dv
+  HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_SET);                  //dv
 }
 
 
@@ -792,9 +808,9 @@ uint8_t MPU9250_SPI_ReadByte(uint8_t reg_addr)                                  
   uint8_t tx_data[2] = {reg_addr | MPU9250_SPI_READ, 0x00};                                           //dv
   uint8_t rx_data[2] = {0};                                                                                   //dv
 
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_RESET);                               // 拉低CS
+  HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_RESET);                               // 拉低CS
   HAL_SPI_TransmitReceive(&hspi4, tx_data, rx_data, 2, HAL_MAX_DELAY);     //dv
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_SET);                                 //dv
+  HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_SET);                                 //dv
 
   return rx_data[1];                                                                                          //dv
 }
@@ -829,7 +845,7 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)                          
 {
   if(hspi->Instance == SPI4)                                                                                      //dv
   {
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_SET);
     //角速度数据处理
 
     OmegaRawBuf.buf[OmegaRawBuf.write_idx].X = (int16_t)((Spi4RxBuf[1] << 8) | Spi4RxBuf[2]);
@@ -838,13 +854,13 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)                          
     atomic_store(&(OmegaRawBuf.latestidx),OmegaRawBuf.write_idx);
     OmegaRawBuf.write_idx = (OmegaRawBuf.write_idx+1)%4;
 
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
     HAL_SPI_TransmitReceive_IT(&hspi1, (uint8_t*)&Spi1TxBuf, (uint8_t*)&Spi1RxBuf, 1);
 
   }
   if(hspi->Instance == SPI1)
   {
-    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_SET);
 
     // 角度数据处理
     PitchRawBuf.buf[PitchRawBuf.write_idx] = ((int16_t)(Spi1RxBuf & 0x3FFF) + 1227)%16384;
@@ -865,7 +881,7 @@ void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
     atomic_store(&(YawRawBuf.latestidx),YawRawBuf.write_idx);
     YawRawBuf.write_idx = (YawRawBuf.write_idx+1)%4;
 
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_3, GPIO_PIN_RESET);                                     // 跳转到SPI1读取角度
+    HAL_GPIO_WritePin(SPI4_CS_GPIO_Port, SPI4_CS_Pin, GPIO_PIN_RESET);                                     // 跳转到SPI1读取角度
     HAL_SPI_TransmitReceive_IT(&hspi4, Spi4TxBuf, Spi4RxBuf, 7);
   }
 }
@@ -939,8 +955,8 @@ void SpdCtrl(SpdCtrlHandler_s* h,TIM_HandleTypeDef* htim)
 
 void SpdCtrlStart(void)
 {
-//  HAL_GPIO_WritePin(GPIOA,GPIO_PIN_7,GPIO_PIN_SET);     //dv 使能驱动器1
-//  HAL_GPIO_WritePin(GPIOC,GPIO_PIN_5,GPIO_PIN_SET);     //dv 使能驱动器2
+  HAL_GPIO_WritePin(PitchChanelEnb_GPIO_Port,PitchChanelEnb_Pin,GPIO_PIN_SET);     //dv 使能驱动器1
+  HAL_GPIO_WritePin(YawChanelEnb_GPIO_Port,YawChanelEnb_Pin,GPIO_PIN_SET);     //dv 使能驱动器2
 }
 
 
