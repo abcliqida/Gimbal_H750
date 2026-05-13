@@ -229,6 +229,15 @@ SECTIONS
   PROVIDE( __bss_start = __tbss_start );
   PROVIDE( __bss_size = __bss_end - __bss_start );
 
+
+.RAM (NOLOAD) :
+{
+  . = ALIGN(4);
+  KEEP(*(.RAM))
+  KEEP(*(.RAM.*))
+  . = ALIGN(4);
+} >RAM AT > FLASH
+
   /* User_heap_stack section, used to check that there is enough RAM left */
   ._user_heap_stack (NOLOAD) :
   {
