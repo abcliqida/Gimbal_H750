@@ -134,10 +134,10 @@ typedef struct{
 }CompCoeff_t;
 
 typedef enum{
-  SpdMode,
-  VoltMode,
-  CurrMode,
-  AscMode,
+  SpdMode = 3,
+  VoltMode = 2,
+  CurrMode = 1,
+  AscMode = 0,
 }CtrlMode_e;
 
 
@@ -211,7 +211,7 @@ typedef struct{
     float OmegaZOffset;
     uint8_t IsValid;
 }CalibParams_t;
-CalibParams_t CalibParams = {.PitchElecOffSet = 11844,.PitchMechOffsetForIMU = 13700,.PitchMechOffSet = 200,.RollElecOffSet = 14796,.RollMechOffSet = 14127,.OmegaXOffset = -0.0115f,.OmegaYOffset = 0.0063f,.OmegaZOffset = 0.0115f};
+CalibParams_t CalibParams = {.PitchElecOffSet = 11844,.PitchMechOffsetForIMU = 13850,.PitchMechOffSet = 100,.RollElecOffSet = 14796,.RollMechOffSet = 14127,.OmegaXOffset = -0.0115f,.OmegaYOffset = 0.0063f,.OmegaZOffset = 0.0115f};
 
 typedef enum{
     Chirp,
@@ -393,7 +393,10 @@ int main(void)
   HAL_TIM_Base_Start_IT(&htim7);
 
   HAL_UARTEx_ReceiveToIdle_DMA(&huart5,Uart5RXBuf,UART5_RXBUF_LEN);
-  Mpu9250Init();
+  uint8_t Ret = 3;
+  do{
+    Ret = Mpu9250Init();
+  }while(Ret != 0);                                                                     // 如果初始化失败，那么重新初始化
 
   SetMotorCtrlParams();                                                                 //dv 电机控制参数设置
 //  ParamsCalib();                                                                      //dv 进行参数标定
@@ -407,7 +410,7 @@ int main(void)
   MotorCtrl_HdwrEnb(&PitchChanel);
   MotorCtrl_SpdMode_Start(&PitchChanel);
   MotorCtrl_HdwrEnb(&RollChanel);
-  MotorCtrl_AscMode_Start(&RollChanel);
+  MotorCtrl_SpdMode_Start(&RollChanel);
 
   /* USER CODE END 2 */
 
@@ -933,8 +936,8 @@ void SetMotorCtrlParams()
   PitchChanel.FocIRQ = TIM1_UP_IRQn;
 
 
-  RollChanel.KpOmega = 0.4125f*3.f;
-  RollChanel.KiOmega = 5.112f*3.f;
+  RollChanel.KpOmega = 0.3367f*8;
+  RollChanel.KiOmega = 3.899f*8;
   RollChanel.Np = 7;
   RollChanel.Rs = 3.76f;
   RollChanel.Psif = 0.001761f;
