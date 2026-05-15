@@ -134,6 +134,7 @@ typedef struct{
 }CompCoeff_t;
 
 typedef enum{
+  PosMode = 4,
   SpdMode = 3,
   VoltMode = 2,
   CurrMode = 1,
@@ -143,6 +144,9 @@ typedef enum{
 
 typedef struct{
     float AngleElec;
+    float PosCmd;
+    float PosFbk;
+    float KpPos;
     float OmegaMechCmd;
     float OmegaMechFbk;
     float OmegaMechIntg;
@@ -161,6 +165,7 @@ typedef struct{
     CompCoeff_t CompCoeff;
     GPIO_TypeDef* GpioPort;
     TIM_HandleTypeDef* htim;
+    uint8_t PosLoopIRQ;
     uint16_t SpdLoopIRQ;
     uint16_t FocIRQ;
     uint16_t EnbPin;
@@ -270,9 +275,13 @@ typedef struct{
 }AngleData_t;
 __attribute__((section(".RAM"))) AngleData_t AngleData = {.Header = 0x5A89,.Length = 8,};
 
+
 typedef struct{
     uint16_t Header;
     uint16_t Length;
+}LogDateHdr_t;
+
+typedef struct{
     uint64_t TimeStamp;
     float PitchAngleMech;
     float PitchOmegaCmd;
@@ -281,8 +290,7 @@ typedef struct{
     float RollOmegaCmd;
     float RollOmegaFbk;
 }LogData_t;
-__attribute__((section(".RAM"))) LogData_t LogData = {.Header = 0x5A89,.Length = 36};
-
+__attribute__((section(".RAM"))) uint8_t LogDataTxBuffer[36] = {0};
 uint8_t Q128Ret = 0;
 /* USER CODE END PV */
 
@@ -312,11 +320,13 @@ void SetLpfParams(float Ts,float CutoffFreq);
 void SensorReadingStart(void);
 void SpdCtrl(MotorCtrlHandler_t* h);
 void CurrCtrl(MotorCtrlHandler_t* h);
+void PosCtrl(MotorCtrlHandler_t* h);
 void SpdModeInit(MotorCtrlHandler_t* h);
 void MotorCtrl_Break(MotorCtrlHandler_t* h);
 void MotorCtrl_CurrMode_Start(MotorCtrlHandler_t* h);
 void MotorCtrl_AscMode_Start(MotorCtrlHandler_t* h);
 void MotorCtrl_VoltMode_Start(MotorCtrlHandler_t* h);
+void MotorCtrl_PosMode_Start(MotorCtrlHandler_t* h);
 void Asc(TIM_HandleTypeDef* htim);
 
 uint8_t NeedCalib(void);
@@ -378,6 +388,7 @@ int main(void)
   MX_SPI6_Init();
   MX_TIM7_Init();
   MX_TIM8_Init();
+  MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim1);
   HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_1);
@@ -391,6 +402,7 @@ int main(void)
 
   HAL_TIM_Base_Start_IT(&htim6);
   HAL_TIM_Base_Start_IT(&htim7);
+  HAL_TIM_Base_Start_IT(&htim16);
 
   HAL_UARTEx_ReceiveToIdle_DMA(&huart5,Uart5RXBuf,UART5_RXBUF_LEN);
   uint8_t Ret = 3;
@@ -407,10 +419,14 @@ int main(void)
 
   SetLpfParams(Ts_SpdCtrl,100.f);                                         //dv 设置低通滤波器参数
   SetMotorCtrlParams();
+
   MotorCtrl_HdwrEnb(&PitchChanel);
-  MotorCtrl_SpdMode_Start(&PitchChanel);
+  MotorCtrl_PosMode_Start(&PitchChanel);
+  PitchChanel.PosCmd = -PI/4*0.8f;
   MotorCtrl_HdwrEnb(&RollChanel);
-  MotorCtrl_SpdMode_Start(&RollChanel);
+  MotorCtrl_PosMode_Start(&RollChanel);
+  RollChanel.PosCmd = 0;
+
 
   /* USER CODE END 2 */
 
@@ -571,11 +587,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)           //dv 定�
 
 
 //      PitchChanel.OmegaMechCmd = Signal;
-
+    PitchChanel.PosFbk = PitchData.AngleMech.Prev;
     PitchChanel.OmegaMechFbk = OmegaData.Y.Prev;                      //dv 前一时刻的角速度反馈赋值给Pitch通道
     PitchChanel.AngleElec = PitchData.AngleElec.Prev;                 //dv 前一时刻的电角度反馈赋值给Pitch通道
     SpdCtrl(&PitchChanel);                                         //dv 进行速度控制
 
+    RollChanel.PosFbk = RollData.AngleMech.Prev;
     RollChanel.OmegaMechFbk = OmegaData.Roll.Prev;                    //dv 前一时刻的角速度反馈赋值给Roll通道
     RollChanel.AngleElec = RollData.AngleElec.Prev;                   //dv 前一时刻的电角度反馈赋值给Roll通道
     SpdCtrl(&RollChanel);                                          //dv 进行速度控制
@@ -596,18 +613,40 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)           //dv 定�
 
   }
 
-  // 信号生成器
-  if(htim->Instance == TIM7)                  // 信号生成器
+  // 位置控制模式
+  if(htim->Instance == TIM7)
   {
-    PitchChanel.Curr2r.q = SignalGenerate(&CurrSigForCalib);
+    PosCtrl(&PitchChanel);
+    PosCtrl(&RollChanel);
+  }
+
+  // 负责根据串口是否有数据来切换电机控制模式
+  if(htim->Instance == TIM16)
+  {
+    MotorCtrl_PosMode_Start(&PitchChanel);
+    PitchChanel.PosCmd = -PI/4*0.8f;
+    MotorCtrl_PosMode_Start(&RollChanel);
+    RollChanel.PosCmd = 0;
+//    HAL_NVIC_DisableIRQ(TIM16_IRQn);
   }
 }
+
+// 位置控制
+void PosCtrl(MotorCtrlHandler_t* h)
+{
+    if(h->Mode == PosMode)
+    {
+        h->OmegaMechCmd = h->KpPos*(h->PosCmd - h->PosFbk);
+        h->OmegaMechCmd = fmaxf(fminf(17.4533f,h->OmegaMechCmd),-17.4533f);
+    }
+}
+
 
 
 // 速度控制
 void SpdCtrl(MotorCtrlHandler_t* h)                                                 //dv 速度控制、内部带有初始化逻辑
 {
-  if(h->Mode == SpdMode)                                                            //dv 如果为速度模式
+  if(h->Mode == SpdMode || h->Mode == PosMode)                                                            //dv 如果为速度模式
   {
     if(h->NeedInit == true)                                                         //dv 首次进入速度模式时，需进行初始化
     {
@@ -689,7 +728,12 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)                          
     PitchData.AngleElecRaw = (PitchRaw - CalibParams.PitchElecOffSet + 0x4000)%0x4000;                //dv 消除零偏（电）
     PitchData.AngleElec.Now = ((float)(PitchData.AngleElecRaw%2340))/2340.f*2*PI;                     //dv 计算电角度
     PitchData.AngleMechRaw = (PitchRaw - CalibParams.PitchMechOffSet - CalibParams.PitchMechOffsetForIMU + 0x8000)%0x4000;
-    PitchData.AngleMech.Now = ((float)(RollData.AngleMechRaw)/16384.f)*2*PI;
+    PitchData.AngleMech.Now = ((float)(PitchData.AngleMechRaw)/16384.f)*2*PI;
+    PitchData.AngleMech.Now = fmodf(PitchData.AngleMech.Now,2*PI);
+    if(PitchData.AngleMech.Now > PI)
+    {
+      PitchData.AngleMech.Now = PitchData.AngleMech.Now - 2*PI;
+    }
     PitchData.AngleMechRawForIMU = (PitchRaw - CalibParams.PitchMechOffsetForIMU + 0x4000)%0x4000;    //dv 消除零偏（机械）
     PitchData.AngleMechForIMU.Now = ((float)(PitchData.AngleMechRawForIMU)/16384.f)*2*PI;             //dv 计算机械角度
   }
@@ -701,6 +745,11 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)                          
     RollData.AngleElec.Now = ((float)(RollData.AngleElecRaw%2340))/2340.f*2*PI;                       //dv 计算电角度
     RollData.AngleMechRaw = (RollRaw - CalibParams.RollMechOffSet + 0x4000)%0x4000;                   //dv 消除零偏（机械）
     RollData.AngleMech.Now = ((float)(RollData.AngleMechRaw)/16384.f)*2*PI;                           //dv 滚转机械角度
+    RollData.AngleMech.Now = fmodf(RollData.AngleMech.Now,2*PI);
+    if(RollData.AngleMech.Now > PI)
+    {
+        RollData.AngleMech.Now = RollData.AngleMech.Now - 2*PI;
+    }
   }
   if(hspi->Instance == SPI6)                                                                          //dv SPI6中断函数
   {
@@ -913,6 +962,7 @@ void SetMotorCtrlParams()
 {
 //  PitchChanel.KpOmega = 0.4578f;
 //  PitchChanel.KiOmega = 28.03f;
+  PitchChanel.KpPos = 15.0f;
   PitchChanel.KpOmega = 0.4578f*1.5f;
   PitchChanel.KiOmega = 28.03f*1.5f;
   PitchChanel.Np = 7;
@@ -934,8 +984,11 @@ void SetMotorCtrlParams()
   PitchChanel.Mode = AscMode;
   PitchChanel.htim = &htim1;
   PitchChanel.FocIRQ = TIM1_UP_IRQn;
+  PitchChanel.SpdLoopIRQ = TIM6_DAC_IRQn;
+  PitchChanel.PosLoopIRQ = TIM7_IRQn;
 
 
+  RollChanel.KpPos = 15.0f;
   RollChanel.KpOmega = 0.3367f*8;
   RollChanel.KiOmega = 3.899f*8;
   RollChanel.Np = 7;
@@ -956,6 +1009,8 @@ void SetMotorCtrlParams()
   RollChanel.Mode = AscMode;
   RollChanel.htim = &htim8;
   RollChanel.FocIRQ = TIM8_UP_TIM13_IRQn;
+  RollChanel.SpdLoopIRQ = TIM6_DAC_IRQn;
+  RollChanel.PosLoopIRQ = TIM7_IRQn;
 }
 
 
@@ -964,6 +1019,7 @@ void CurrCtrl(MotorCtrlHandler_t* h)                                            
 {
   switch(h->Mode)                                                                   //dv 判断模式
   {
+    case PosMode:
     case SpdMode:                                                                   //dv 速度模式
     case CurrMode:                                                                  //dv 电流模式
       h->Volt2r.d = h->Rs*h->Curr2r_Prev.d;                                         //dv 计算d轴电压
@@ -1000,12 +1056,28 @@ void MotorCtrl_AscMode_Start(MotorCtrlHandler_t* h)
 }
 
 
+void MotorCtrl_PosMode_Start(MotorCtrlHandler_t* h)
+{
+//    HAL_NVIC_DisableIRQ(h->SpdLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
+//    HAL_NVIC_DisableIRQ(h->FocIRQ);                           //dv 关闭速度环所在的中断，//？？？
+//    HAL_NVIC_DisableIRQ(h->PosLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
+    h->Mode = PosMode;                                                  //dv 更改模式
+    h->PosCmd = 0.f;
+//    HAL_NVIC_EnableIRQ(h->SpdLoopIRQ);
+//    HAL_NVIC_EnableIRQ(h->FocIRQ);
+//    HAL_NVIC_EnableIRQ(h->PosLoopIRQ);
+}
+
+
 void MotorCtrl_SpdMode_Start(MotorCtrlHandler_t* h)                   //dv 开启速度模式
 {
-  HAL_NVIC_DisableIRQ(h->SpdLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
-  h->Mode = SpdMode;                                                  //dv 更改模式
-  h->OmegaMechCmd = 0.f;
-  HAL_NVIC_EnableIRQ(h->SpdLoopIRQ);
+  if(h->Mode != SpdMode)
+  {
+      HAL_NVIC_DisableIRQ(h->SpdLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
+      h->Mode = SpdMode;                                                  //dv 更改模式
+      h->OmegaMechCmd = 0.f;
+      HAL_NVIC_EnableIRQ(h->SpdLoopIRQ);
+  }
 }
 
 void MotorCtrl_VoltMode_Start(MotorCtrlHandler_t* h)
@@ -1033,6 +1105,10 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)       
     // 判断是否为RK发送的数据
     if(Header == 0x5A89)                                                                                  //dv 帧头判断
     {
+      __HAL_TIM_SET_COUNTER(&htim16,0);
+      MotorCtrl_SpdMode_Start(&PitchChanel);
+      MotorCtrl_SpdMode_Start(&RollChanel);
+
       // 发送数据
       if(Type == 1)                                                                                       //dv 发送数据
       {
@@ -1040,17 +1116,19 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)       
         if(Cmd == 1)                                                                                      //dv 发送日志数据
         {
           // 准备数据
-          LogData.Header = 0x5A89;
-          LogData.Length = 36;
-          LogData.TimeStamp = 0;                                                                          //dv 时间戳
-          LogData.PitchAngleMech = PitchData.AngleMech.Prev;                                              //dv 俯仰机械角度
-          LogData.PitchOmegaCmd = PitchChanel.OmegaMechCmd;                                               //dv 角速度指令
-          LogData.PitchOmegaFbk = PitchChanel.OmegaMechFbk;                                               //dv 角速度反馈
-          LogData.RollAngleMech = RollData.AngleMech.Prev;                                                //dv 滚转机械角
-          LogData.RollOmegaCmd = RollChanel.OmegaMechCmd;                                                 //dv 角速度指令
-          LogData.RollOmegaFbk = RollChanel.OmegaMechFbk;                                                 //dv 角速度反馈
+          LogDateHdr_t * hdr = (LogDateHdr_t *)LogDataTxBuffer;
+          hdr->Header = 0x5A89;
+          hdr->Length = 36;
+          LogData_t * data =  (LogData_t *)(LogDataTxBuffer+sizeof(LogDateHdr_t));
+          data->TimeStamp = 0;                                                                          //dv 时间戳
+          data->PitchAngleMech = PitchData.AngleMech.Prev;                                              //dv 俯仰机械角度
+          data->PitchOmegaCmd = PitchChanel.OmegaMechCmd;                                               //dv 角速度指令
+          data->PitchOmegaFbk = PitchChanel.OmegaMechFbk;                                               //dv 角速度反馈
+          data->RollAngleMech = RollData.AngleMech.Prev;                                                //dv 滚转机械角
+          data->RollOmegaCmd = RollChanel.OmegaMechCmd;                                                 //dv 角速度指令
+          data->RollOmegaFbk = RollChanel.OmegaMechFbk;                                                 //dv 角速度反馈
           // 启动串口发送
-          HAL_UART_Transmit_DMA(&huart5,(uint8_t*)(&LogData),sizeof(LogData));           //dv 启动串口DMA传输
+          HAL_UART_Transmit_DMA(&huart5,(uint8_t*)(LogDataTxBuffer),sizeof(LogDataTxBuffer));           //dv 启动串口DMA传输
         }
 
         // 发送编码器角度
