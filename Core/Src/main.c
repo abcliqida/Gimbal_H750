@@ -270,16 +270,12 @@ SignalHandler_t CurrSigForCalib = {0};
 typedef struct{
     uint16_t Header;
     uint16_t Length;
+}Hdr_t;
+
+typedef struct{
     uint16_t PitchAngleMech;
     uint16_t RollAngleMech;
 }AngleData_t;
-__attribute__((section(".RAM"))) AngleData_t AngleData = {.Header = 0x5A89,.Length = 8,};
-
-
-typedef struct{
-    uint16_t Header;
-    uint16_t Length;
-}LogDateHdr_t;
 
 typedef struct{
     uint64_t TimeStamp;
@@ -290,7 +286,17 @@ typedef struct{
     float RollOmegaCmd;
     float RollOmegaFbk;
 }LogData_t;
-__attribute__((section(".RAM"))) uint8_t LogDataTxBuffer[36] = {0};
+
+typedef struct{
+    uint16_t Length;
+    uint8_t Data[50];
+}Uart5Tx_t;
+__attribute__((section(".RAM"))) Uart5Tx_t Uart5TxBuf[5] = {0};
+
+volatile uint16_t LatestIdx = 0;
+volatile uint16_t SendIdx = 0;
+volatile bool Uart5_Tx_NeedRestart = true;
+
 uint8_t Q128Ret = 0;
 /* USER CODE END PV */
 
@@ -1115,32 +1121,36 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)       
         // 发送日志                                                                                         //dv
         if(Cmd == 1)                                                                                      //dv 发送日志数据
         {
-          // 准备数据
-          LogDateHdr_t * hdr = (LogDateHdr_t *)LogDataTxBuffer;
-          hdr->Header = 0x5A89;
-          hdr->Length = 36;
-          LogData_t * data =  (LogData_t *)(LogDataTxBuffer+sizeof(LogDateHdr_t));
-          data->TimeStamp = 0;                                                                          //dv 时间戳
-          data->PitchAngleMech = PitchData.AngleMech.Prev;                                              //dv 俯仰机械角度
-          data->PitchOmegaCmd = PitchChanel.OmegaMechCmd;                                               //dv 角速度指令
-          data->PitchOmegaFbk = PitchChanel.OmegaMechFbk;                                               //dv 角速度反馈
-          data->RollAngleMech = RollData.AngleMech.Prev;                                                //dv 滚转机械角
-          data->RollOmegaCmd = RollChanel.OmegaMechCmd;                                                 //dv 角速度指令
-          data->RollOmegaFbk = RollChanel.OmegaMechFbk;                                                 //dv 角速度反馈
-          // 启动串口发送
-          HAL_UART_Transmit_DMA(&huart5,(uint8_t*)(LogDataTxBuffer),sizeof(LogDataTxBuffer));           //dv 启动串口DMA传输
+          // 将需发送的数据存入发送缓冲区
+          uint16_t TempIdx = (LatestIdx + 1)%5;
+          Uart5TxBuf[TempIdx].Length = 36;
+          Hdr_t* pHdr =  (Hdr_t*)&(Uart5TxBuf[TempIdx].Data[0]);
+          pHdr->Header = 0x5A89;
+          pHdr->Length = 36;
+          LogData_t* pData = (LogData_t*)(&(Uart5TxBuf[TempIdx].Data[0]) + 4);
+//          pData->TimeStamp = 0;                                                                         // 赋值会导致程序跑飞，why？
+          pData->PitchAngleMech = PitchData.AngleMech.Prev;
+          pData->PitchOmegaCmd = PitchChanel.OmegaMechCmd;
+          pData->PitchOmegaFbk = PitchChanel.OmegaMechFbk;
+          pData->RollAngleMech = RollData.AngleMech.Prev;
+          pData->RollOmegaCmd = RollChanel.OmegaMechCmd;
+          pData->RollOmegaFbk = RollChanel.OmegaMechFbk;
+          LatestIdx = TempIdx;
         }
 
         // 发送编码器角度
-        if(Cmd == 3)                                                                                      //dv 获取编码器角度
+        if(Cmd == 3)
         {
-          // 准备数据
-          AngleData.Header = 0x5A89;
-          AngleData.Length = 8;
-          AngleData.PitchAngleMech = PitchData.AngleMechRaw;                                              //dv 俯仰机械角度
-          AngleData.RollAngleMech = RollData.AngleMechRaw;                                                //dv 滚转机械角度
-          // 启动串口发送
-          HAL_UART_Transmit_DMA(&huart5,(uint8_t*)(&AngleData),sizeof(AngleData));       //dv 启动串口DMA传输
+          // 将需发送的数据存入发送缓冲区
+          uint16_t TempIdx = (LatestIdx+1)%5;
+          Uart5TxBuf[TempIdx].Length = 8;
+          Hdr_t* pHdr = (Hdr_t*)&(Uart5TxBuf[TempIdx].Data);
+          pHdr->Header = 0x5A89;
+          pHdr->Length = 8;
+          AngleData_t* pData = (AngleData_t*)(&(Uart5TxBuf[TempIdx].Data[0])+4);
+          pData->PitchAngleMech = PitchData.AngleMechRaw;
+          pData->RollAngleMech = RollData.AngleMechRaw;
+          LatestIdx = TempIdx;
         }
       }
 
@@ -1157,12 +1167,71 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)       
           PitchChanel.OmegaMechCmd = temp;                                                                //dv 赋值
           memcpy(&temp,&(Uart5RXBuf[10]),4);                                                              //dv 解析滚转角速度指令
           RollChanel.OmegaMechCmd = temp;                                                                 //dv 赋值
+
+          // 将需发送的数据存入环形缓冲区
+          uint16_t TempIdx = (LatestIdx + 1)%5;
+          Uart5TxBuf[TempIdx].Length = 5;
+          Hdr_t* pHdr = (Hdr_t*)(&(Uart5TxBuf[TempIdx].Data));
+          pHdr->Header = 0x5A89;
+          pHdr->Length = 5;
+          *(((uint8_t*)pHdr)+4)=1;
+          LatestIdx = TempIdx;
         }
       }
     }
 
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart5,Uart5RXBuf,UART5_RXBUF_LEN);                    //dv 重新启动接收
+    if(Uart5_Tx_NeedRestart)
+    {
+      uint16_t TempIdx = (SendIdx+1)%5;
+      HAL_UART_Transmit_DMA(&huart5,Uart5TxBuf[TempIdx].Data,Uart5TxBuf[TempIdx].Length); 				// 重启DMA传输
+      Uart5_Tx_NeedRestart = false;
+    }
+
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart5,Uart5RXBuf,UART5_RXBUF_LEN);
   }
+}
+
+
+// Uart传输完成中断回调
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if(huart->Instance == UART5)
+  {
+    static uint16_t TempIdx = 0;
+    SendIdx = (SendIdx+1)%5;
+
+    if(SendIdx != LatestIdx)
+    {
+      Uart5_Tx_NeedRestart = false;
+      TempIdx = (SendIdx+1)%5;
+      HAL_UART_Transmit_DMA(&huart5,Uart5TxBuf[TempIdx].Data,Uart5TxBuf[TempIdx].Length);
+    }
+    else
+    {
+      Uart5_Tx_NeedRestart = true;
+    }
+  }
+}
+
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if(huart->Instance == UART5)
+    {
+//        uint32_t err = HAL_UART_GetError(huart);
+//
+//        HAL_UART_DMAStop(huart);
+//        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+//
+//        // 复位 HAL 库内部的串口状态（非常重要！否则库会一直认为串口处于 BUSY 状态）
+//        huart->ErrorCode = HAL_UART_ERROR_NONE;
+//        huart->gState = HAL_UART_STATE_READY;
+//        huart->RxState = HAL_UART_STATE_READY;
+//
+//        // 重新开启 DMA 接收
+//        Uart5_Tx_NeedRestart = true;
+//        HAL_UARTEx_ReceiveToIdle_DMA(&huart5,Uart5RXBuf,UART5_RXBUF_LEN);
+    }
 }
 
 
