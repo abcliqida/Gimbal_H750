@@ -1257,19 +1257,20 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if(huart->Instance == UART5)
     {
-//        uint32_t err = HAL_UART_GetError(huart);
-//
-//        HAL_UART_DMAStop(huart);
-//        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
-//
-//        // 复位 HAL 库内部的串口状态（非常重要！否则库会一直认为串口处于 BUSY 状态）
-//        huart->ErrorCode = HAL_UART_ERROR_NONE;
-//        huart->gState = HAL_UART_STATE_READY;
-//        huart->RxState = HAL_UART_STATE_READY;
-//
-//        // 重新开启 DMA 接收
-//        Uart5_Tx_NeedRestart = true;
-//        HAL_UARTEx_ReceiveToIdle_DMA(&huart5,Uart5RXBuf,UART5_RXBUF_LEN);
+        uint32_t err = HAL_UART_GetError(huart);
+
+        HAL_UART_DMAStop(huart);
+        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+
+        // 复位 HAL 库内部的串口状态（非常重要！否则库会一直认为串口处于 BUSY 状态）
+        huart->ErrorCode = HAL_UART_ERROR_NONE;
+        huart->gState = HAL_UART_STATE_READY;
+        huart->RxState = HAL_UART_STATE_READY;
+
+        // 重新开启 DMA 接收
+        SendIdx = (LatestIdx + 4)%5;
+        Uart5_Tx_NeedRestart = true;
+        HAL_UARTEx_ReceiveToIdle_DMA(&huart5,Uart5RXBuf,UART5_RXBUF_LEN);
     }
 }
 
