@@ -141,6 +141,11 @@ typedef enum{
   AscMode = 0,
 }CtrlMode_e;
 
+typedef enum{
+    InertiaSpdMode = 1,
+    AxisSpdMode = 0,
+}SpdCtrlMode_e;
+
 
 typedef struct{
     float AngleElec;
@@ -170,7 +175,9 @@ typedef struct{
     uint16_t FocIRQ;
     uint16_t EnbPin;
     CtrlMode_e Mode;
-    bool NeedInit;
+    CtrlMode_e ModePrev;
+    SpdCtrlMode_e SpdCtrlMode;
+    SpdCtrlMode_e SpdCtrlModePrev;
 }MotorCtrlHandler_t;
 MotorCtrlHandler_t PitchChanel = {0},RollChanel = {0};
 
@@ -184,7 +191,7 @@ typedef struct{
     float x_prev;
     float x_prev_prev;
     float y_prev;
-    float y_prev_prev
+    float y_prev_prev;
 }NotchBuf_t;
 
 typedef struct
@@ -216,7 +223,7 @@ typedef struct{
     float OmegaZOffset;
     uint8_t IsValid;
 }CalibParams_t;
-CalibParams_t CalibParams = {.PitchElecOffSet = 11844,.PitchMechOffsetForIMU = 13850,.PitchMechOffSet = 100,.RollElecOffSet = 14796,.RollMechOffSet = 14127,.OmegaXOffset = -0.0115f,.OmegaYOffset = 0.0063f,.OmegaZOffset = 0.0115f};
+CalibParams_t CalibParams = {.PitchElecOffSet = 13880,.PitchMechOffsetForIMU = 15414,.PitchMechOffSet = 200,.RollElecOffSet = 12425,.RollMechOffSet = 10215,.OmegaXOffset = -0.0105f,.OmegaYOffset = 0.0046f,.OmegaZOffset = 0.012f};
 
 typedef enum{
     Chirp,
@@ -316,7 +323,8 @@ uint8_t MPU9250_SPI_ReadByte(uint8_t reg_addr);
 uint8_t Mpu9250Init(void);
 void SetMotorCtrlParams(void);
 void ParamsCalib(void);
-void MotorCtrl_SpdMode_Start(MotorCtrlHandler_t* h);
+void MotorCtrl_InertiaSpdMode_Start(MotorCtrlHandler_t* h);
+void MotorCtrl_AxisSpdMode_Start(MotorCtrlHandler_t* h);
 void MotorCtrl_HdwrEnb(MotorCtrlHandler_t* h);
 void MotorCtrl_HdwrDisab(MotorCtrlHandler_t* h);
 float SignalGenerate(SignalHandler_t* h);
@@ -599,7 +607,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)           //dv 定�
     SpdCtrl(&PitchChanel);                                         //dv 进行速度控制
 
     RollChanel.PosFbk = RollData.AngleMech.Prev;
-    RollChanel.OmegaMechFbk = OmegaData.Roll.Prev;                    //dv 前一时刻的角速度反馈赋值给Roll通道
+    if(RollChanel.Mode == PosMode || RollChanel.SpdCtrlMode == AxisSpdMode)
+    {
+      RollChanel.OmegaMechFbk = OmegaData.Roll.Prev;
+    }
+    else if(RollChanel.SpdCtrlMode == InertiaSpdMode)
+    {
+      RollChanel.OmegaMechFbk = OmegaData.X.Prev;
+    }
     RollChanel.AngleElec = RollData.AngleElec.Prev;                   //dv 前一时刻的电角度反馈赋值给Roll通道
     SpdCtrl(&RollChanel);                                          //dv 进行速度控制
 
@@ -654,10 +669,9 @@ void SpdCtrl(MotorCtrlHandler_t* h)                                             
 {
   if(h->Mode == SpdMode || h->Mode == PosMode)                                                            //dv 如果为速度模式
   {
-    if(h->NeedInit == true)                                                         //dv 首次进入速度模式时，需进行初始化
+    if(h->Mode != h->ModePrev || h->SpdCtrlModePrev != h->SpdCtrlMode)
     {
-      SpdModeInit(h);                                                               //dv 初始化
-      h->NeedInit = false;                                                          //dv 初始化标志位清零
+        SpdModeInit(h);
     }
     h->Curr2r_Prev.d = h->Curr2r.d;                                                 //dv 电流指令存储
     h->Curr2r_Prev.q = h->Curr2r.q;                                                 //dv 电流指令存储
@@ -691,10 +705,8 @@ void SpdCtrl(MotorCtrlHandler_t* h)                                             
     h->Comp.Out_2delay = h->Comp.Out_1delay;                                        //dv
     h->Comp.Out_1delay = h->Comp.Out;                                               //dv
   }
-  else                                                                              //dv 如果为非速度模式
-  {
-    h->NeedInit = true;                                                             //dv 设置初始化标志，用于下次速度模式的初始化
-  }
+  h->ModePrev = h->Mode;
+  h->SpdCtrlModePrev = h->SpdCtrlMode;
 }
 
 void SpdModeInit(MotorCtrlHandler_t* h)                             //dv 速度模式初始化
@@ -968,7 +980,7 @@ void SetMotorCtrlParams()
 {
 //  PitchChanel.KpOmega = 0.4578f;
 //  PitchChanel.KiOmega = 28.03f;
-  PitchChanel.KpPos = 15.0f;
+  PitchChanel.KpPos = 5.0f;
   PitchChanel.KpOmega = 0.4578f*1.5f;
   PitchChanel.KiOmega = 28.03f*1.5f;
   PitchChanel.Np = 7;
@@ -994,9 +1006,9 @@ void SetMotorCtrlParams()
   PitchChanel.PosLoopIRQ = TIM7_IRQn;
 
 
-  RollChanel.KpPos = 15.0f;
-  RollChanel.KpOmega = 0.3367f*8;
-  RollChanel.KiOmega = 3.899f*8;
+  RollChanel.KpPos = 5.0f;
+  RollChanel.KpOmega = 0.3367f*6.5f;
+  RollChanel.KiOmega = 3.899f*6.5f;
   RollChanel.Np = 7;
   RollChanel.Rs = 3.76f;
   RollChanel.Psif = 0.001761f;
@@ -1064,26 +1076,40 @@ void MotorCtrl_AscMode_Start(MotorCtrlHandler_t* h)
 
 void MotorCtrl_PosMode_Start(MotorCtrlHandler_t* h)
 {
-//    HAL_NVIC_DisableIRQ(h->SpdLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
-//    HAL_NVIC_DisableIRQ(h->FocIRQ);                           //dv 关闭速度环所在的中断，//？？？
-//    HAL_NVIC_DisableIRQ(h->PosLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
+    HAL_NVIC_DisableIRQ(h->SpdLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
+    HAL_NVIC_DisableIRQ(h->FocIRQ);                           //dv 关闭速度环所在的中断，//？？？
+    HAL_NVIC_DisableIRQ(h->PosLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
     h->Mode = PosMode;                                                  //dv 更改模式
+    h->SpdCtrlMode = AxisSpdMode;
     h->PosCmd = 0.f;
-//    HAL_NVIC_EnableIRQ(h->SpdLoopIRQ);
-//    HAL_NVIC_EnableIRQ(h->FocIRQ);
-//    HAL_NVIC_EnableIRQ(h->PosLoopIRQ);
+    HAL_NVIC_EnableIRQ(h->SpdLoopIRQ);
+    HAL_NVIC_EnableIRQ(h->FocIRQ);
+    HAL_NVIC_EnableIRQ(h->PosLoopIRQ);
 }
 
 
-void MotorCtrl_SpdMode_Start(MotorCtrlHandler_t* h)                   //dv 开启速度模式
+void MotorCtrl_InertiaSpdMode_Start(MotorCtrlHandler_t* h)                   //dv 开启速度模式
 {
-  if(h->Mode != SpdMode)
+  if(h->Mode != SpdMode || h->SpdCtrlMode != InertiaSpdMode)
   {
       HAL_NVIC_DisableIRQ(h->SpdLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
       h->Mode = SpdMode;                                                  //dv 更改模式
+      h->SpdCtrlMode = InertiaSpdMode;
       h->OmegaMechCmd = 0.f;
       HAL_NVIC_EnableIRQ(h->SpdLoopIRQ);
   }
+}
+
+void MotorCtrl_AxisSpdMode_Start(MotorCtrlHandler_t* h)                   //dv 开启轴速度模式
+{
+    if(h->Mode != SpdMode || h->SpdCtrlMode != AxisSpdMode)
+    {
+        HAL_NVIC_DisableIRQ(h->SpdLoopIRQ);                           //dv 关闭速度环所在的中断，//？？？
+        h->Mode = SpdMode;                                                  //dv 更改模式
+        h->SpdCtrlMode = AxisSpdMode;
+        h->OmegaMechCmd = 0.f;
+        HAL_NVIC_EnableIRQ(h->SpdLoopIRQ);
+    }
 }
 
 void MotorCtrl_VoltMode_Start(MotorCtrlHandler_t* h)
@@ -1112,8 +1138,6 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)       
     if(Header == 0x5A89)                                                                                  //dv 帧头判断
     {
       __HAL_TIM_SET_COUNTER(&htim16,0);
-      MotorCtrl_SpdMode_Start(&PitchChanel);
-      MotorCtrl_SpdMode_Start(&RollChanel);
 
       // 发送数据
       if(Type == 1)                                                                                       //dv 发送数据
@@ -1167,6 +1191,21 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)       
           PitchChanel.OmegaMechCmd = temp;                                                                //dv 赋值
           memcpy(&temp,&(Uart5RXBuf[10]),4);                                                              //dv 解析滚转角速度指令
           RollChanel.OmegaMechCmd = temp;                                                                 //dv 赋值
+
+          static SpdCtrlMode_e SpdCtrlMode = AxisSpdMode;
+          memcpy(&SpdCtrlMode,&(Uart5RXBuf[14]),1);
+          if(SpdCtrlMode == AxisSpdMode)
+          {
+              MotorCtrl_AxisSpdMode_Start(&RollChanel);
+          }
+          else if(SpdCtrlMode == InertiaSpdMode)
+          {
+//            RollChanel.OmegaMechCmd = RollChanel.OmegaMechCmd*cosf(-PitchData.AngleElec.Prev);
+            MotorCtrl_InertiaSpdMode_Start(&RollChanel);
+          }
+          MotorCtrl_AxisSpdMode_Start(&PitchChanel);
+
+
 
           // 将需发送的数据存入环形缓冲区
           uint16_t TempIdx = (LatestIdx + 1)%5;
